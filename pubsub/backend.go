@@ -8,5 +8,4 @@ type Backend interface{
   SubscribeUser(ctx context.Context,userId,topic string,handler func(Message))error
   UnSubscribe(ctx context.Context,topic string)error
   Close()error
-
 }

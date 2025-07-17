@@ -11,48 +11,51 @@ import (
 
 type memoryBackend struct{
 
-  mu sync.RWMutex
-  subcribers  map[string][]func(pubsub.Message)
-  userHandlers map[string]map[string][]func(pubsub.Message)
+  mu                sync.RWMutex
+  subcribers        map[string][]func(pubsub.Message)
+  userHandlers      map[string]map[string][]func(pubsub.Message)
+  queues            map[string]chan pubsub.Message
+  workers           map[string]context.CancelFunc
+  ctx               context.Context
+  cancel            context.CancelFunc
 
 }
 
-func New()pubsub.Backend{
+func New(parent context.Context)pubsub.Backend{
+
+  ctx,cancel:=context.WithCancel(parent)
+
   return &memoryBackend{
     subcribers: make(map[string][]func(pubsub.Message)),
     userHandlers: make(map[string]map[string][]func(pubsub.Message)),
+    queues: make(map[string]chan pubsub.Message),
+    workers: make(map[string]context.CancelFunc),
+    ctx: ctx,
+    cancel: cancel,
   }
 }
-
-// type Backend interface {
-// 	Publish(ctx context.Context, msg Message) error
-// 	Subscribe(ctx context.Context, topic string, handler func(Message)) error
-// 	SubscribeUser(ctx context.Context, topic string, handler func(Message)) error
-// 	UnSubscribe(ctx context.Context, topic string) error
-// 	Close() error
-// }
 
 func (m *memoryBackend)Publish(ctx context.Context,msg pubsub.Message)error{
 
   m.mu.RLock()
-  defer m.mu.RUnlock()
+  queue,ok:=m.queues[msg.Topic]
+  log.Println("QUEUE CHECKING ")
+  m.mu.RUnlock()
 
-  //publishing subscribed topic handlers 
-  if msg.UserID != ""{
-    if userMap,ok:= m.userHandlers[msg.UserID];ok{
-      for _,handler:=range userMap[msg.Topic]{
-        go handler(msg)
-      }
-    }
+  if !ok{
+  log.Println("NO QUEUE STARTING WORKER")
+    m.startWorker(msg.Topic)
+    m.mu.RLock()
+    queue=m.queues[msg.Topic]
+    m.mu.RUnlock()
+  }
+
+  select {
+  case queue <- msg:
     return nil
+  case <-ctx.Done():
+    return ctx.Err()
   }
-
-  //publishing subscribed topic handlers 
-  for _,handler :=range m.subcribers[msg.Topic]{
-    go handler(msg)
-  }
-
-  return nil
 }
 
 func (m *memoryBackend)Subscribe(ctx context.Context,topic string, handler func(pubsub.Message))error{
@@ -77,10 +80,19 @@ func (m *memoryBackend)UnSubscribe(ctx context.Context,topic string)error{
 
 func (m *memoryBackend)SubscribeUser(ctx context.Context,userId,topic string, handler func(pubsub.Message) )error{
 
-return nil
+  m.mu.RLock()
+  defer m.mu.RUnlock()
+
+  if m.userHandlers[userId]==nil{
+
+    m.userHandlers[userId]=make(map[string][]func(pubsub.Message))
+  }
+  m.userHandlers[userId][topic]=append(m.userHandlers[userId][topic], handler)
+
+  return nil
 }
 
 //no close method for inMemory subcribed messages
 func (m *memoryBackend)Close()error{
-   return nil
+  return nil
 }
